@@ -339,16 +339,71 @@ static bool readThresholdSector(uint16_t sector, uint8_t *out)
     return esp_partition_read(part, (size_t)sector * FLASH_SECTOR_SIZE, out, FLASH_SECTOR_SIZE) == ESP_OK;
 }
 
+// Bir sektordeki ilk BOS slotun bayt offsetini bulur; sektor doluysa
+// FLASH_SECTOR_SIZE doner.
+//
+// ⚠️ Sektorun tamamini tek seferde okumuyoruz. Once 4 KB'lik `static` bir
+// tampon kullaniliyordu, ama bu fonksiyon HEM UARTTask'ten (okuma yolu) HEM
+// ADCReadTask'ten (acilista acik olay aramasi) cagriliyor - paylasilan tampon
+// iki gorev ust uste geldiginde yaris kosulu yaratiyordu ve yanlis bir yazma
+// indeksi kayitlarin yanlis slota gitmesine yol acabilirdi. Artik kucuk bir
+// yigin tamponuyla parca parca taraniyor: paylasilan durum yok, 4 KB RAM de
+// geri kazanildi.
+static bool findFreeOffsetInSector(uint16_t sector, uint16_t *out_offset)
+{
+    // Yalnizca her kaydin ILK bayti gerekiyor; 256 baytlik parcalar halinde
+    // okuyoruz (16 kayit/parca, sektor basina 16 okuma).
+    uint8_t chunk[256];
+
+    if (out_offset == NULL || sector >= TH_RECORD_SECTOR_COUNT)
+    {
+        return false;
+    }
+
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, CUSTOM_PARTITION_SUBTYPE, PARTITION_LABEL_THRESHOLD_REC);
+
+    if (part == NULL)
+    {
+        return false;
+    }
+
+    for (uint32_t base = 0; base < FLASH_SECTOR_SIZE; base += sizeof(chunk))
+    {
+        if (esp_partition_read(part, (size_t)sector * FLASH_SECTOR_SIZE + base,
+                               chunk, sizeof(chunk)) != ESP_OK)
+        {
+            return false;
+        }
+
+        uint16_t found = thFindFreeOffset(chunk, (uint16_t)sizeof(chunk), FLASH_RECORD_SIZE);
+
+        if (found < sizeof(chunk))
+        {
+            *out_offset = (uint16_t)(base + found);
+            return true;
+        }
+    }
+
+    *out_offset = FLASH_SECTOR_SIZE; // sektor dolu
+    return true;
+}
+
 // Halkadaki bir sonraki yazma konumunu (mutlak slot indeksi) hesaplar.
+//
+// Okuma yolu (uart.c) icin kullanilir. Flash okunamazsa aktif sektorun basi
+// dondurulur: o durumda RS485'ten bos kayit gorunur - yanlis bir konum
+// dondurup mevcut kayitlarin uzerine yazilmasindansa dogru davranis budur.
+// (Yazma yolu bu fonksiyonu KULLANMAZ; writeThresholdRecord kendi okudugu
+// sektor kopyasi uzerinden hesaplar.)
 uint16_t getThresholdWriteIndex(void)
 {
-    // 4 KB - stack'e sigmaz, static olmali (UARTTask'in yigini 4 KB).
-    static uint8_t sector_buf[FLASH_SECTOR_SIZE];
-    uint16_t offset = FLASH_SECTOR_SIZE;
+    uint16_t offset = 0;
 
-    if (readThresholdSector(th_sector_data, sector_buf))
+    if (!findFreeOffsetInSector(th_sector_data, &offset))
     {
-        offset = thFindFreeOffset(sector_buf, FLASH_SECTOR_SIZE, FLASH_RECORD_SIZE);
+        PRINTF("GETTHRESHOLDWRITEINDEX: esik sektoru okunamadi, sektor basi varsayildi\r\n");
+        offset = 0;
     }
 
     th_write_pos_t pos = thNextWritePos(th_sector_data, offset, FLASH_SECTOR_SIZE,
@@ -385,10 +440,24 @@ static bool fetchThresholdRecordBack(void *ctx, uint16_t back, uint8_t *out)
 // dondurur.
 bool findOpenThresholdEvent(th_time_t *start_time, uint16_t *peak_cv, th_time_t *last_record_time)
 {
+    // Bu fonksiyon (uart.c'nin aksine) mutex TUTMADAN cagriliyor, o yuzden
+    // kilidi burada aliyoruz: yazma tarafi tam bu sirada sektor siliyor
+    // olabilir ve zincirde yarim silinmis bir kayit okunabilirdi.
+    if (xSemaphoreTake(xFlashMutex, pdMS_TO_TICKS(250)) != pdTRUE)
+    {
+        PRINTF("FINDOPENTHRESHOLDEVENT: flash mutex alinamadi, devralma atlandi\r\n");
+        led_blink_pattern(LED_ERROR_CODE_FLASH_MUTEX_NOT_TAKEN, false);
+        return false;
+    }
+
     uint16_t write_index = getThresholdWriteIndex();
 
-    return thFindOpenEvent(fetchThresholdRecordBack, &write_index, TH_OPEN_EVENT_MAX_BACK,
-                           start_time, peak_cv, last_record_time);
+    bool found = thFindOpenEvent(fetchThresholdRecordBack, &write_index, TH_OPEN_EVENT_MAX_BACK,
+                                 start_time, peak_cv, last_record_time);
+
+    xSemaphoreGive(xFlashMutex);
+
+    return found;
 }
 
 // Write threshold data to flash.
@@ -416,16 +485,29 @@ void writeThresholdRecord(const struct ThresholdData *record)
         return;
     }
 
+    bool sector_read_ok = false;
+
     if (xSemaphoreTake(xFlashMutex, pdMS_TO_TICKS(250)) == pdTRUE)
     {
         PRINTF("WRITETHRESHOLDRECORD: memcpy mutex received\r\n");
-        readThresholdSector(th_sector_data, (uint8_t *)th_flash_buf);
+        sector_read_ok = readThresholdSector(th_sector_data, (uint8_t *)th_flash_buf);
         xSemaphoreGive(xFlashMutex);
     }
     else
     {
         PRINTF("WRITETHRESHOLDRECORD: memcpy mutex error\r\n");
         led_blink_pattern(LED_ERROR_CODE_FLASH_MUTEX_NOT_TAKEN, false);
+        return;
+    }
+
+    // ⚠️ Okuma basarisiz olursa DEVAM ETME. Asagidaki yazma, th_flash_buf'in
+    // TAMAMINI sektore geri yaziyor; okuma tutmadiysa elimizdeki icerik onceki
+    // bir sektorden kalma BAYAT veri olur ve saglam kayitlarin uzerine yazilir.
+    // Bir kaydi kaybetmek, bir sektoru bozmaktan iyidir.
+    if (!sector_read_ok)
+    {
+        PRINTF("WRITETHRESHOLDRECORD: sektor okunamadi, kayit iptal (bayat tampon yazilmadi)\r\n");
+        led_blink_pattern(LED_ERROR_CODE_FLASH_METADATA_CORRUPT, false);
         return;
     }
 

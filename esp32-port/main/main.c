@@ -180,7 +180,7 @@ static void vUARTTask(void *pvParameters)
                 {
                     uart_write_bytes(UART_PORT_NUM, identify_response_buf, strlen(identify_response_buf));
                     PRINTF("<--- %s", identify_response_buf);
-                    uart_wait_tx_done(UART_PORT_NUM, portMAX_DELAY);
+                    uartWaitTxDone();
 
                     received_bytes = uart_receive_message(pdMS_TO_TICKS(1500));
 

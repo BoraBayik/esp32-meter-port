@@ -24,6 +24,8 @@ uint8_t initUART();
 void uartTaskHeartbeat(void);
 // uart_puts + kalp atisi. Cok satirli gonderimlerde bunu kullan.
 void uartSendLine(const char *line);
+// uart_wait_tx_done + kalp atisi. Suresiz bloklamak yerine parcali bekler.
+void uartWaitTxDone(void);
 // This function check the data which comes when State is Listening, and compares the message to defined strings, and returns a ListeningState value to process the request
 enum ListeningStates checkListeningData(uint8_t *data_buffer, uint8_t size);
 // This function deletes a character from a given string

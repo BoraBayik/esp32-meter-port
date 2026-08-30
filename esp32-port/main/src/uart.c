@@ -129,6 +129,23 @@ void uartSendLine(const char *line)
     uart_puts_esp(line);
 }
 
+// uart_wait_tx_done(portMAX_DELAY) SURESIZ bloklar ve blokta olan gorev
+// watchdog'u besleyemez. 300 baud'da donanim FIFO'sunun (128 bayt) tamamen
+// bosalmasi ~4.3 saniye suruyor - 8 saniyelik TWDT butcesinin yarisi, hicbir
+// pay birakmadan. BLE yigini araya girip gorevi biraz geciktirdiginde cihaz
+// gonderimin ortasinda resetlenebilir.
+//
+// Cozum: sinirli parcalar halinde bekle, her parcada kalp atisi at.
+void uartWaitTxDone(void)
+{
+    // Toplam ust sinir yok: gonderim bitene kadar bekliyoruz, ama artik
+    // watchdog'u ac birakmadan.
+    while (uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500)) == ESP_ERR_TIMEOUT)
+    {
+        uartTaskHeartbeat();
+    }
+}
+
 // UART Initialization - protokolun gercek baglanti ayarlariyla (300 baud,
 // 7 veri biti, cift parite, 1 stop biti - defines.h'deki degerler)
 uint8_t initUART()
@@ -309,7 +326,7 @@ void set_device_baud_rate(uint8_t b_rate_hex)
 
 void set_init_baud_rate()
 {
-    uart_wait_tx_done(UART_PORT_NUM, portMAX_DELAY);
+    uartWaitTxDone();
     uart_set_baudrate(UART_PORT_NUM, 300);
     // Clear the RX FIFO to remove any garbage characters received during baud rate switch
     uart_flush_input(UART_PORT_NUM);
@@ -501,7 +518,7 @@ void send_threshold_records(uint8_t *xor_result)
         vTaskDelay(pdMS_TO_TICKS(15));
     }
 
-    uart_wait_tx_done(UART_PORT_NUM, portMAX_DELAY);
+    uartWaitTxDone();
 }
 
 // ⚠️ GERCEK BIR STACK TASMASI BURADA YAKALANIP DUZELTILDI: reset_dates_flash
@@ -676,7 +693,7 @@ void send_readout_message(uint8_t request_mode)
 
     PRINTF("SETTINGSTATEHANDLER: readout XOR is: %02X.\n", readout_xor);
     uart_putc_esp(readout_xor);
-    uart_wait_tx_done(UART_PORT_NUM, portMAX_DELAY);
+    uartWaitTxDone();
 }
 
 void send_programming_acknowledgement()
@@ -698,7 +715,7 @@ void send_programming_acknowledgement()
     uart_puts_esp((char *)ack_buff);
     uart_putc_esp(ack_bcc);
 
-    uart_wait_tx_done(UART_PORT_NUM, portMAX_DELAY);
+    uartWaitTxDone();
 }
 
 uint8_t verifyHourMinSec(uint8_t hour, uint8_t min, uint8_t sec)
