@@ -38,6 +38,10 @@
 #define TH_RECORD_SECTOR_COUNT FLASH_THRESHOLD_RECORDS_SECTOR_COUNT
 #define TH_RECORDS_PER_SECTOR (FLASH_SECTOR_SIZE / FLASH_RECORD_SIZE)
 #define TH_RECORD_SLOT_COUNT (TH_RECORD_SECTOR_COUNT * TH_RECORDS_PER_SECTOR)
+// Load profile okumasinda flash mutex'i ust uste kac kez alinamazsa okuma
+// iptal edilir. 250 ms'lik timeout ile en fazla ~5 saniyelik takilma; TWDT'nin
+// altinda kalir.
+#define LP_MUTEX_MAX_RETRY 20
 #define SERIAL_NUMBER_SIZE 9
 #define SERIAL_NUMBER_FLAG_SIZE 3
 // Seri no karsilastirmasi (uart.c/control_serial_number) uzunlugu sabit

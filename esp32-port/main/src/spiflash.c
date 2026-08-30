@@ -1,4 +1,5 @@
 #include "header/spiflash.h"
+#include "header/uart.h"
 #include "header/project_globals.h"
 #include "header/bcc.h"
 #include "header/print.h"
@@ -722,6 +723,10 @@ void send_load_profile_records(uint8_t *buf)
                                  ? end_index
                                  : (uint32_t)(FLASH_LOAD_PROFILE_RECORD_AREA_SIZE - FLASH_RECORD_SIZE);
         int snprintf_result;
+        // Mutex ust uste alinamazsa donguden CIKILMALI. Eskiden `continue`
+        // adresi ilerletmeden tekrar deniyordu; tek cikis yolu watchdog'un
+        // cihazi resetlemesiydi.
+        uint8_t mutex_fail_count = 0;
 
         // send STX character
         uint8_t stx_byte = STX;
@@ -729,8 +734,13 @@ void send_load_profile_records(uint8_t *buf)
 
         while (start_addr <= end_addr)
         {
+            // 300 baud'da bu dongu dakikalarca surebiliyor; UART gorevi mesaj
+            // dongusune donemedigi icin watchdog'u burada besliyoruz.
+            uartTaskHeartbeat();
+
             if (xSemaphoreTake(xFlashMutex, pdMS_TO_TICKS(250)) == pdTRUE)
             {
+                mutex_fail_count = 0;
                 const void *mmap_ptr = NULL;
                 esp_partition_mmap_handle_t mmap_handle;
                 if (esp_partition_mmap(load_profile_part, 0, FLASH_LOAD_PROFILE_RECORD_AREA_SIZE, ESP_PARTITION_MMAP_DATA, &mmap_ptr, &mmap_handle) != ESP_OK)
@@ -771,6 +781,15 @@ void send_load_profile_records(uint8_t *buf)
             else
             {
                 led_blink_pattern(LED_ERROR_CODE_FLASH_MUTEX_NOT_TAKEN, false);
+
+                if (++mutex_fail_count >= LP_MUTEX_MAX_RETRY)
+                {
+                    PRINTF("SEARCHDATAINFLASH: flash mutex %d kez alinamadi, "
+                           "okuma iptal edildi.\n", LP_MUTEX_MAX_RETRY);
+                    sendErrorMessage((char *)"FLASHMUTEXERR");
+                    return;
+                }
+
                 continue;
             }
 

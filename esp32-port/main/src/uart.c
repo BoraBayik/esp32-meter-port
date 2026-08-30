@@ -6,6 +6,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_partition.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -100,6 +101,32 @@ static inline void uart_putc_esp(uint8_t c)
 static inline void uart_puts_esp(const char *s)
 {
     uart_write_bytes(UART_PORT_NUM, s, strlen(s));
+}
+
+// dev'de bu fonksiyon task_health_flags |= WDT_FLAG_UART yapiyordu (kendi
+// yazilim watchdog gorevi icin). ESP portunda watchdog ESP-IDF'in TWDT'si
+// oldugu icin karsiligi esp_task_wdt_reset().
+//
+// esp_task_wdt_status(NULL) kontrolu sart: bu fonksiyon TWDT'ye kayitli
+// OLMAYAN bir gorevden de cagrilabilir (ornegin BLE tarafindan tetiklenen bir
+// okuma) ve o durumda esp_task_wdt_reset() hata dondurur.
+void uartTaskHeartbeat(void)
+{
+    if (esp_task_wdt_status(NULL) == ESP_OK)
+    {
+        esp_task_wdt_reset();
+    }
+}
+
+void uartSendLine(const char *line)
+{
+    if (line == NULL)
+    {
+        return;
+    }
+
+    uartTaskHeartbeat();
+    uart_puts_esp(line);
 }
 
 // UART Initialization - protokolun gercek baglanti ayarlariyla (300 baud,
@@ -468,7 +495,7 @@ void send_threshold_records(uint8_t *xor_result)
         }
         else
         {
-            uart_puts_esp((char *)buffer);
+            uartSendLine((char *)buffer);
         }
 
         vTaskDelay(pdMS_TO_TICKS(15));
@@ -573,7 +600,7 @@ void send_reset_dates(uint8_t *xor_result)
         }
 
         bccGenerate((uint8_t *)date_buffer, result, xor_result);
-        uart_puts_esp(date_buffer);
+        uartSendLine(date_buffer);
     }
 }
 
@@ -589,31 +616,31 @@ void send_readout_message(uint8_t request_mode)
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "0.0.0(%s)\r\n", DEVICE_SERIAL_NUMBER);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "0.2.0(%s)\r\n", SOFTWARE_VERSION);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "0.8.4(%d*min)\r\n", load_profile_record_period);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "0.9.1(%02d:%02d:%02d)\r\n", current_time.hour, current_time.min, current_time.sec);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "0.9.2(%02d-%02d-%02d)\r\n", current_time.year, current_time.month, current_time.day);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "96.1.3(%s)\r\n", PRODUCTION_DATE);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "96.3.12(%03d)\r\n", getVRMSThresholdValue());
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     if (request_mode == REQUEST_MODE_LONG_READ)
     {
@@ -625,15 +652,15 @@ void send_readout_message(uint8_t request_mode)
     {
         result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "32.7.0(%.2f)\r\n", vrms_max_last);
         bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-        uart_puts_esp(readout_line_buffer);
+        uartSendLine(readout_line_buffer);
 
         result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "52.7.0(%.2f)\r\n", vrms_min_last);
         bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-        uart_puts_esp(readout_line_buffer);
+        uartSendLine(readout_line_buffer);
 
         result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "72.7.0(%.2f)\r\n", vrms_mean_last);
         bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-        uart_puts_esp(readout_line_buffer);
+        uartSendLine(readout_line_buffer);
 
         xSemaphoreGive(xVRMSLastValuesMutex);
     }
@@ -645,7 +672,7 @@ void send_readout_message(uint8_t request_mode)
 
     result = snprintf(readout_line_buffer, sizeof(readout_line_buffer), "!\r\n%c", ETX);
     bccGenerate((uint8_t *)readout_line_buffer, result, &readout_xor);
-    uart_puts_esp(readout_line_buffer);
+    uartSendLine(readout_line_buffer);
 
     PRINTF("SETTINGSTATEHANDLER: readout XOR is: %02X.\n", readout_xor);
     uart_putc_esp(readout_xor);

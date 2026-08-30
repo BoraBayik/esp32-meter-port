@@ -13,6 +13,17 @@
 
 // UART Initialization
 uint8_t initUART();
+// UART gorevinin watchdog kalp atisi. Uzun sureli gonderimlerde (300 baud'da
+// tek bir readout 30 saniyeyi asabiliyor) gorev mesaj dongusune donemedigi icin
+// watchdog cihazi okumanin ortasinda resetliyordu. Gonderim donguleri bunu
+// periyodik cagirmali.
+//
+// dev'de bu, task_health_flags icindeki WDT_FLAG_UART bitini tazeliyordu;
+// ESP portunda karsiligi ESP-IDF'in kendi Task Watchdog Timer'ini (TWDT)
+// beslemek. Cagiran gorev TWDT'ye kayitli degilse sessizce hicbir sey yapmaz.
+void uartTaskHeartbeat(void);
+// uart_puts + kalp atisi. Cok satirli gonderimlerde bunu kullan.
+void uartSendLine(const char *line);
 // This function check the data which comes when State is Listening, and compares the message to defined strings, and returns a ListeningState value to process the request
 enum ListeningStates checkListeningData(uint8_t *data_buffer, uint8_t size);
 // This function deletes a character from a given string
