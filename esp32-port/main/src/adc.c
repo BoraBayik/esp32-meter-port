@@ -412,7 +412,7 @@ void writeThresholdRecord(const struct ThresholdData *record)
     if (th_sector_data >= TH_RECORD_SECTOR_COUNT)
     {
         PRINTF("WRITETHRESHOLDRECORD: sektor numarasi araligin disinda (%d), kayit iptal\r\n", th_sector_data);
-        led_blink_pattern(LED_ERROR_CODE_FLASH_MUTEX_NOT_TAKEN, false);
+        led_blink_pattern(LED_ERROR_CODE_FLASH_METADATA_CORRUPT, false);
         return;
     }
 

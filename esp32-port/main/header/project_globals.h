@@ -203,5 +203,6 @@ extern const uint16_t led_pattern_vrms_threshold_mutex_not_taken[];
 extern const uint16_t led_pattern_threshold_set_mutex_not_taken[];
 extern const uint16_t led_pattern_rx_buffer_overflow_isr[];
 extern const LedPattern patterns[];
+extern const uint8_t patterns_count;
 
 #endif

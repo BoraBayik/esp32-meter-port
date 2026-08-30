@@ -114,6 +114,9 @@
 #define LED_ERROR_CODE_THRESHOLD_SET_MUTEX_NOT_TAKEN 9
 #define LED_ERROR_CODE_RX_BUFFER_OVERFLOW_ISR 10
 #define LED_ERROR_CODE_STACK_OVERFLOW 11
+// Flash'taki sektor numarasi / esik degeri gecerli araligin disinda cikti ve
+// guvenli degere cekildi. Kayitlarin bir kismi kaybolmus olabilir.
+#define LED_ERROR_CODE_FLASH_METADATA_CORRUPT 12
 
 // indexed obis configuration
 #define THRESHOLD_RECORD_OBIS_COUNT 10

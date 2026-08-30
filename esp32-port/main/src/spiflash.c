@@ -199,6 +199,16 @@ void getFlashContents()
     esp_partition_read(lp_sector_part, 0, &sector_content, sizeof(sector_content));
     sector_data = (sector_content == 0xFFFF) ? 0 : sector_content;
 
+    // Bu deger dogrudan flash adresi carpani oluyor. Yazilirken gelen bir reset
+    // (harici TPL5010 periyodik olarak vuruyor) bozarsa, sinirsiz bir sektor
+    // numarasi kendi alanimizin disini silmeye kalkar. Kullanmadan once dogrula.
+    if (sector_data >= FLASH_LOAD_PROFILE_AREA_TOTAL_SECTOR_COUNT)
+    {
+        PRINTF("GETFLASHCONTENTS: load profile sektoru gecersiz (%d), 0'a cekildi.\n", sector_data);
+        led_blink_pattern(LED_ERROR_CODE_FLASH_METADATA_CORRUPT, false);
+        sector_data = 0;
+    }
+
     // get record data
     esp_partition_read(load_profile_part, sector_data * FLASH_SECTOR_SIZE, flash_data, FLASH_SECTOR_SIZE);
 
@@ -207,6 +217,24 @@ void getFlashContents()
     esp_partition_read(threshold_prm_part, 0, th_buf, sizeof(th_buf));
     vrms_threshold = (th_buf[0] == 0xFFFF) ? vrms_threshold : th_buf[0];
     th_sector_data = (th_buf[1] == 0xFFFF) ? 0 : th_buf[1];
+
+    if (th_sector_data >= TH_RECORD_SECTOR_COUNT)
+    {
+        PRINTF("GETFLASHCONTENTS: esik kayit sektoru gecersiz (%d), 0'a cekildi.\n", th_sector_data);
+        led_blink_pattern(LED_ERROR_CODE_FLASH_METADATA_CORRUPT, false);
+        th_sector_data = 0;
+    }
+
+    // Esik degeri de bozulabilir. 0 olursa her pencere esigi asar ve surekli
+    // sahte olay uretilir; cok buyuk olursa hicbir ariza kaydedilmez. Ikisi de
+    // sessiz ariza; protokolun izin verdigi araligin (1-999) disindaysa
+    // varsayilana don.
+    if (vrms_threshold == 0 || vrms_threshold > VRMS_THRESHOLD_MAX)
+    {
+        PRINTF("GETFLASHCONTENTS: esik degeri gecersiz (%d), varsayilan %d kullaniliyor.\n",
+               vrms_threshold, VRMS_THRESHOLD_DEFAULT);
+        vrms_threshold = VRMS_THRESHOLD_DEFAULT;
+    }
 
     // Seri no ARTIK FLASH'TAN OKUNMUYOR: DEVICE_SERIAL_NUMBER makrosu
     // (project_conf.h) her yerde dogrudan kullaniliyor - bkz. uart.c'deki
@@ -360,6 +388,15 @@ void SPIWriteToFlash(VRMS_VALUES_RECORD *vrms_values)
     const esp_partition_t *load_profile_part = get_partition(PARTITION_LABEL_LOAD_PROFILE);
     if (load_profile_part == NULL)
     {
+        return;
+    }
+
+    // Son savunma hatti: asagida flash SILINIYOR. sector_data bozulursa silme
+    // kendi alanimizin disina duser. Yazmaktansa yazmamak yeglenir.
+    if (sector_data >= FLASH_LOAD_PROFILE_AREA_TOTAL_SECTOR_COUNT)
+    {
+        PRINTF("SPIWRITETOFLASH: sektor numarasi araligin disinda (%d), yazma iptal.\n", sector_data);
+        led_blink_pattern(LED_ERROR_CODE_FLASH_METADATA_CORRUPT, false);
         return;
     }
 

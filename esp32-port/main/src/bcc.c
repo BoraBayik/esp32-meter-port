@@ -64,7 +64,7 @@ void sendErrorMessage(char *error_text)
 
 void led_blink_pattern(int pattern_id, bool once)
 {
-    if (pattern_id >= 0 && pattern_id <= 11)
+    if (pattern_id >= 0 && pattern_id < (int)patterns_count)
     {
         current_pattern_id = pattern_id;
         play_once = once;
