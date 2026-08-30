@@ -37,6 +37,12 @@ void ble_store_config_init(void);
 
 static const char *TAG = "meter_port";
 
+// RTC canliligi. Sistemdeki neredeyse her periyodik is current_time'in
+// ILERLEMESINE bagli: esik penceresi dakika degisimiyle kapaniyor, load profile
+// belirli dakikalarda yaziliyor. Saat donarsa ikisi de sessizce bozulur -- ne
+// hata verir ne durur. vGetRTCTask bu bayragi tutar, tuketiciler kontrol eder.
+static volatile bool s_rtc_healthy = true;
+
 // ============================================================================
 // Bu dosya, `dev` branch'teki blink/main.c'nin GERCEK gorev (task) yapisinin
 // ESP32-C3 portudur (Asama 3'un son maddesi). O ana kadar main.c sadece
@@ -580,6 +586,14 @@ static void thProcessWindow(uint16_t threshold_cv)
         return;
     }
 
+    // Saat donmussa zaman damgasi guvenilmez; ayni damgayla ust uste kayit
+    // yazmaktansa yazmamak dogru. Olay makinesi calismaya devam eder.
+    if (!s_rtc_healthy)
+    {
+        PRINTF("THRESHOLD EVENT: RTC ilerlemiyor, kayit atlandi\r\n");
+        return;
+    }
+
     switch (action)
     {
     case TH_ACTION_EVENT_STARTED:
@@ -612,6 +626,8 @@ static void vADCReadTask(void *pvParameters)
     // tetiklenme) onlemek icin "bu dakika icin zaten yazdik mi" kenar
     // tespiti eklendi.
     int last_load_profile_write_min = -1;
+    int last_load_profile_write_hour = -1;
+    int last_load_profile_write_day = -1;
 
 #if CONF_THRESHOLD_ENABLED
     uint16_t initial_threshold_cv = thresholdVoltsToCv(getVRMSThresholdValue());
@@ -730,10 +746,19 @@ static void vADCReadTask(void *pvParameters)
 #endif
 #endif
 
-        if (current_time.sec == 0 && current_time.min % load_profile_record_period == 0 &&
-            last_load_profile_write_min != current_time.min)
+        // s_rtc_healthy kontrolu: saat durursa bu kosul her saniye saglanir ve
+        // saniyede bir sektor silinirdi -- 100k yazma dayanimi ~28 saatte
+        // tukenir. Asagidaki dakika/saat/gun karsilastirmasi da ayni senaryoyu
+        // kapatan ikinci savunma hatti.
+        if (current_time.sec == 0 && s_rtc_healthy &&
+            current_time.min % load_profile_record_period == 0 &&
+            !(last_load_profile_write_min == current_time.min &&
+              last_load_profile_write_hour == current_time.hour &&
+              last_load_profile_write_day == current_time.day))
         {
             last_load_profile_write_min = current_time.min;
+            last_load_profile_write_hour = current_time.hour;
+            last_load_profile_write_day = current_time.day;
 
             PRINTF("ADC READ TASK: minute is multiple of %d. write flash block is running...\r\n", load_profile_record_period);
 
@@ -789,21 +814,53 @@ static void vGetRTCTask(void *pvParameters)
     (void)pvParameters;
     TickType_t startTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(1000);
+    datetime_t previous = {0};
+    uint16_t stall_count = 0;
 
     while (1)
     {
         vTaskDelayUntil(&startTime, xFrequency);
 
-        if (getTimePt7c4338(&current_time))
+        if (!getTimePt7c4338(&current_time))
         {
+            // Okuma basarisiz: current_time eski degerinde KALIR. Sessizce
+            // devam edersek saat donmus gibi davranir.
+            stall_count++;
+            PRINTF("WRITE DEBUG TASK: RTC read error! (%u ardisik)\r\n", stall_count);
+        }
+        else if (current_time.sec == previous.sec &&
+                 current_time.min == previous.min &&
+                 current_time.hour == previous.hour)
+        {
+            // Cagri basarili ama saat ILERLEMIYOR. Saniyede bir okudugumuz icin
+            // arada bir ayni saniyeye denk gelmek normal; ustuste RTC_STALL_LIMIT
+            // kez ayni kalmasi ise saatin gercekten durdugu anlamina gelir.
+            stall_count++;
+        }
+        else
+        {
+            stall_count = 0;
+            previous = current_time;
+
             PRINTF("NEW FIRMWARE WRITE DEBUG TASK: The Time is: %02u.%02u.20%02u %02u:%02u:%02u\r\n",
                    current_time.day, current_time.month, current_time.year,
                    current_time.hour, current_time.min, current_time.sec);
         }
-        else
+
+        bool healthy = (stall_count < RTC_STALL_LIMIT);
+
+        if (!healthy && s_rtc_healthy)
         {
-            PRINTF("WRITE DEBUG TASK: RTC read error!\r\n");
+            PRINTF("RTC: saat ilerlemiyor! Esik olaylari ve load profile "
+                   "kayitlari durduruldu.\r\n");
+            led_blink_pattern(LED_ERROR_CODE_RTC_STALLED, false);
         }
+        else if (healthy && !s_rtc_healthy)
+        {
+            PRINTF("RTC: saat yeniden ilerliyor, kayitlar devam ediyor.\r\n");
+        }
+
+        s_rtc_healthy = healthy;
 
         // BLE (kullanicinin istegiyle): bos bellek degeri gercekten
         // degistiyse abone bir telefona anlik bildirim gonder - bu gorev

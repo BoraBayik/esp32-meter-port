@@ -117,6 +117,8 @@
 // Flash'taki sektor numarasi / esik degeri gecerli araligin disinda cikti ve
 // guvenli degere cekildi. Kayitlarin bir kismi kaybolmus olabilir.
 #define LED_ERROR_CODE_FLASH_METADATA_CORRUPT 12
+// RTC saati ilerlemiyor. Esik olaylari ve load profile kayitlari durdu.
+#define LED_ERROR_CODE_RTC_STALLED 13
 
 // indexed obis configuration
 #define THRESHOLD_RECORD_OBIS_COUNT 10

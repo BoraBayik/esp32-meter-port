@@ -43,6 +43,10 @@
 // varsayilana donulur.
 #define VRMS_THRESHOLD_DEFAULT 5
 #define VRMS_THRESHOLD_MAX 999
+// RTC saniyede bir okunuyor. Ust uste bu kadar okumada saat ILERLEMEZSE
+// (veya okuma basarisiz olursa) saat durmus sayilir. Arada bir ayni saniyeye
+// denk gelmek normal oldugu icin sinir 1 degil.
+#define RTC_STALL_LIMIT 5
 // Load profile okumasinda flash mutex'i ust uste kac kez alinamazsa okuma
 // iptal edilir. 250 ms'lik timeout ile en fazla ~5 saniyelik takilma; TWDT'nin
 // altinda kalir.

@@ -79,6 +79,7 @@ const uint16_t led_pattern_threshold_set_mutex_not_taken[] = {25, 25, 25, 25, 25
 const uint16_t led_pattern_rx_buffer_overflow_isr[] = {50, 50, 50, 50, 50, 50, 250, 450};               // 3 hizli, 1 uzun
 const uint16_t led_pattern_stackoverflow[] = {500, 200, 100, 700};
 const uint16_t led_pattern_flash_metadata_corrupt[] = {250, 100, 250, 100, 50, 650}; // 2 Uzun, 1 Kisa
+const uint16_t led_pattern_rtc_stalled[] = {500, 100, 500, 100, 500, 300};           // 3 Uzun (saat durdu)
 
 const LedPattern patterns[] = {
     {pattern_idle, 10},
@@ -93,7 +94,8 @@ const LedPattern patterns[] = {
     {led_pattern_threshold_set_mutex_not_taken, 10},
     {led_pattern_rx_buffer_overflow_isr, 8},
     {led_pattern_stackoverflow, 4},
-    {led_pattern_flash_metadata_corrupt, 6}};
+    {led_pattern_flash_metadata_corrupt, 6},
+    {led_pattern_rtc_stalled, 6}};
 
 // led_blink_pattern() sinirini buradan alir; elle yazilmis bir sayi kalirsa
 // yeni desen eklendiginde sessizce calismaz, silindiginde dizi disina tasar.
