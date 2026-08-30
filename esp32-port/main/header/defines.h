@@ -32,6 +32,12 @@
 #define FLASH_LOAD_PROFILE_RECORD_AREA_SIZE (FLASH_LOAD_PROFILE_AREA_TOTAL_SECTOR_COUNT * FLASH_SECTOR_SIZE)
 #define FLASH_THRESHOLD_RECORDS_SECTOR_COUNT 16
 #define FLASH_AMPLITUDE_RECORDS_TOTAL_SECTOR 100
+// esik kayit alanindaki sektor / slot sayilari (halka tampon)
+// dev'de TH_RECORD_SECTOR_COUNT, FLASH_THRESHOLD_RECORDS_SIZE / FLASH_SECTOR_SIZE
+// olarak yaziliyor; ESP'de sektor sayisi zaten dogrudan tanimli.
+#define TH_RECORD_SECTOR_COUNT FLASH_THRESHOLD_RECORDS_SECTOR_COUNT
+#define TH_RECORDS_PER_SECTOR (FLASH_SECTOR_SIZE / FLASH_RECORD_SIZE)
+#define TH_RECORD_SLOT_COUNT (TH_RECORD_SECTOR_COUNT * TH_RECORDS_PER_SECTOR)
 #define SERIAL_NUMBER_SIZE 9
 #define SERIAL_NUMBER_FLAG_SIZE 3
 // Seri no karsilastirmasi (uart.c/control_serial_number) uzunlugu sabit
@@ -155,6 +161,19 @@ _Static_assert(sizeof(DEVICE_SERIAL_NUMBER) - 1 == SERIAL_NUMBER_SIZE,
 #define ADC_SAMPLE_BURST_SIZE 8
 // ani degisim tespiti parametreleri
 #define AMPLITUDE_THRESHOLD 5
+// ESIK OLAY DEFINES
+// bir pencerede toplanabilecek en fazla saniyelik VRMS ornegi (1 dk + pay)
+#define TH_WINDOW_MAX_SAMPLES 72
+// olayin baslamasi icin gereken ardisik pencere sayisi
+#define TH_ENTER_WINDOWS 2
+// olayin bitmesi icin gereken ardisik pencere sayisi (esik altinda)
+#define TH_EXIT_WINDOWS 5
+// uzun olaylarda ara "suruyor" kaydi periyodu (dakika); 1440 = gunde bir
+#define TH_HEARTBEAT_WINDOWS 1440
+// histerezis: cikis esigi giris esiginin bu kadar altindadir (santivolt)
+#define TH_HYSTERESIS_CV 50
+// RTC'nin kurulmus sayilmasi icin en kucuk yil (2 haneli)
+#define TH_RTC_MIN_VALID_YEAR 25
 #define MEAN_CALCULATION_WINDOW_SIZE 20
 #define MEAN_CALCULATION_SHIFT_SIZE 5
 

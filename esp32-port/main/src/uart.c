@@ -10,12 +10,14 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "header/adc.h"
 #include "header/bcc.h"
 #include "header/mutex.h"
 #include "header/print.h"
 #include "header/project_globals.h"
 #include "header/rtc.h"
 #include "header/spiflash.h"
+#include "header/threshold_event.h"
 
 // dev branch'teki blink/src/uart.c dosyasindan uyarlanmistir.
 //
@@ -355,26 +357,20 @@ uint8_t exract_baud_rate_and_mode_from_message(uint8_t *msg_buf, size_t msg_len,
 // Uzun okuma icin ek kayitlar (esik asim + reset kayitlari)
 // ---------------------------------------------------------------------------
 
-// Esik asim kayitlari: aktif sektordeki SON 10 kayit, eskiden yeniye dogru
+// Esik asim kayitlari: halkadaki SON 10 kayit, eskiden yeniye dogru
 // (*1 = en eski, *10 = en yeni) gonderilir - reset kayitlari (0.1.2*N,
-// send_reset_dates) ile AYNI kural. Eskiden bu fonksiyon sektorun ILK 10
-// kaydini okuyup indeksi 10'dan 1'e AZALARAK yaziyordu; yani hem yanlis
-// pencereyi (kayit sayisi 10'u gectiginde en yeni kayitlar hic gorunmuyordu)
-// hem de ters indeks sirasini veriyordu.
+// send_reset_dates) ile AYNI kural.
 //
-// KISIT (bilerek): pencere sadece AKTIF sektor (th_sector_data) icinde
-// aranir. Sektor yeni degistiyse ve icinde 10'dan az kayit varsa, bir onceki
-// sektordeki daha eski kayitlarla tamamlanmaz - bos slotlar sondaki
-// indekslerde "00-00-00" olarak gider (yine send_reset_dates ile ayni
-// davranis). Zaten th_flash_buf boot'ta flash'tan geri okunmadigi icin
-// (bkz. adc.c/writeThresholdRecord'un basindaki not) sektorler arasi
-// gecmis butunlugu su an garanti degil.
+// Kayit alani bir HALKA tampon oldugu icin artik tek bir sektorun icinde
+// aranmiyor; YAZMA KONUMUNDAN geriye dogru yurunuyor. Boylece sektor sinirini
+// gecen pencereler de dogru toplanir - onceki surumdeki "sadece aktif sektore
+// bakilir" kisiti kalkti.
+//
+// Kayitlarin anlami da degisti: artik saniyelik ornek degil OLAY yaziliyor.
+// vrms alani SANTIVOLT (573 = 5.73 V), ikinci alan varyans degil olayin
+// DAKIKA cinsinden suresi (65535 = olay hala suruyor).
 void send_threshold_records(uint8_t *xor_result)
 {
-    // Son 10 kaydi bulmak icin sektorun TAMAMI taranmak zorunda. 4096
-    // byte'lik bu dizi, UARTTask'in stack'ini tuketmemek icin `static` -
-    // bkz. send_reset_dates'teki ayni notta anlatilan stack tasmasi.
-    static uint8_t threshold_sector[FLASH_SECTOR_SIZE];
     uint8_t threshold_records_raw[FLASH_RECORD_SIZE * THRESHOLD_RECORD_OBIS_COUNT];
     uint8_t buffer[48] = {0};
     char year[3] = {0};
@@ -384,10 +380,10 @@ void send_threshold_records(uint8_t *xor_result)
     char min[3] = {0};
     char sec[3] = {0};
     uint16_t vrms = 0;
-    uint16_t variance = 0;
+    uint16_t duration = 0;
     int result;
 
-    memset(threshold_records_raw, 0, sizeof(threshold_records_raw));
+    memset(threshold_records_raw, 0xFF, sizeof(threshold_records_raw));
 
     const esp_partition_t *threshold_rec_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, CUSTOM_PARTITION_SUBTYPE, PARTITION_LABEL_THRESHOLD_REC);
     if (threshold_rec_part == NULL)
@@ -406,29 +402,22 @@ void send_threshold_records(uint8_t *xor_result)
         // okuma ve yazma farkli fiziksel sektorlere baktigi icin RS485
         // uzerinden hep bos/eski veri gorunuyordu. Duzeltme: okuma da
         // th_sector_data'yi kullanmaya basladi.
-        esp_partition_read(threshold_rec_part, (size_t)th_sector_data * FLASH_SECTOR_SIZE, threshold_sector, FLASH_SECTOR_SIZE);
+        //
+        // getThresholdWriteIndex() kendi icinde mutex ALMAZ; burada zaten
+        // tutuyoruz (rekursif olmayan mutex'te ikinci alma kilitlenirdi).
+        uint16_t write_index = getThresholdWriteIndex();
 
-        // Kayitlar sektorun basindan itibaren sirayla yazilir (bkz. adc.c/
-        // writeThresholdRecord); ilk BOS kaydin offset'i, ayni zamanda
-        // yazilmis verinin bittigi yerdir.
-        uint32_t end_offset = 0;
-        while (end_offset < FLASH_SECTOR_SIZE)
+        // Halkada geriye dogru: back = THRESHOLD_RECORD_OBIS_COUNT en eski,
+        // back = 1 en yeni. i = 0 -> en eski olacak sekilde dolduruyoruz ki
+        // asagidaki artan indeks (*1..*10) kronolojik sirayla gitsin.
+        for (size_t i = 0; i < THRESHOLD_RECORD_OBIS_COUNT; i++)
         {
-            if (threshold_sector[end_offset] == 0x00 || threshold_sector[end_offset] == 0xFF)
-            {
-                break;
-            }
-            end_offset += FLASH_RECORD_SIZE;
+            uint16_t back = (uint16_t)(THRESHOLD_RECORD_OBIS_COUNT - i);
+            uint16_t slot = thSlotBack(write_index, back, TH_RECORD_SLOT_COUNT);
+
+            esp_partition_read(threshold_rec_part, (size_t)slot * FLASH_RECORD_SIZE,
+                               &threshold_records_raw[i * FLASH_RECORD_SIZE], FLASH_RECORD_SIZE);
         }
-
-        // Sondan geriye dogru 10 kayitlik pencere; 10'dan az kayit varsa
-        // bastan itibaren ne varsa o alinir (kalan slotlar sifir kalir ve
-        // asagida "bos kayit" olarak yazilir).
-        uint32_t start_offset = (end_offset > sizeof(threshold_records_raw))
-                                    ? (end_offset - sizeof(threshold_records_raw))
-                                    : 0;
-
-        memcpy(threshold_records_raw, threshold_sector + start_offset, end_offset - start_offset);
 
         xSemaphoreGive(xFlashMutex);
     }
@@ -448,7 +437,7 @@ void send_threshold_records(uint8_t *xor_result)
 
         if (threshold_records_raw[offset] == 0xFF || threshold_records_raw[offset] == 0x00)
         {
-            result = snprintf((char *)buffer, sizeof(buffer), "96.77.4*%d(00-00-00,00:00:00)(000,00000)\r\n", (int)idx);
+            result = snprintf((char *)buffer, sizeof(buffer), "96.77.4*%d(00-00-00,00:00:00)(000.00,00000)\r\n", (int)idx);
         }
         else
         {
@@ -458,14 +447,16 @@ void send_threshold_records(uint8_t *xor_result)
             snprintf(hour, sizeof(hour), "%c%c", threshold_records_raw[offset + 6], threshold_records_raw[offset + 7]);
             snprintf(min, sizeof(min), "%c%c", threshold_records_raw[offset + 8], threshold_records_raw[offset + 9]);
             snprintf(sec, sizeof(sec), "%c%c", threshold_records_raw[offset + 10], threshold_records_raw[offset + 11]);
+            // vrms artik SANTIVOLT (573 = 5.73 V), ikinci alan da varyans degil
+            // olayin DAKIKA cinsinden suresi (65535 = olay hala suruyor).
             vrms = threshold_records_raw[offset + 13];
             vrms = (vrms << 8);
             vrms += threshold_records_raw[offset + 12];
-            variance = threshold_records_raw[offset + 15];
-            variance = (variance << 8);
-            variance += threshold_records_raw[offset + 14];
+            duration = threshold_records_raw[offset + 15];
+            duration = (duration << 8);
+            duration += threshold_records_raw[offset + 14];
 
-            result = snprintf((char *)buffer, sizeof(buffer), "96.77.4*%d(%s-%s-%s,%s:%s:%s)(%03d,%05d)\r\n", (int)idx, year, month, day, hour, min, sec, vrms, variance);
+            result = snprintf((char *)buffer, sizeof(buffer), "96.77.4*%d(%s-%s-%s,%s:%s:%s)(%03d.%02d,%05d)\r\n", (int)idx, year, month, day, hour, min, sec, vrms / 100, vrms % 100, duration);
         }
 
         bccGenerate(buffer, result, xor_result);

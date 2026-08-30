@@ -17,6 +17,7 @@
 #include "header/spiflash.h"
 #include "header/uart.h"
 #include "header/adc.h"
+#include "header/threshold_event.h"
 #include "header/ota.h"
 
 // Asama 4 (BLE): ble/include altindaki dosyalar. ⚠️ common.h buraya
@@ -426,6 +427,124 @@ static void vADCSampleTask(void *pvParameters)
 // ADCReadTask - dev'deki vADCReadTask ile ayni mantik (VRMS/varyans hesabi,
 // esik kontrolu, load profile periyodunda flash'a yazma).
 // ---------------------------------------------------------------------------
+#if CONF_THRESHOLD_ENABLED || CONF_THRESHOLD_PIN_ENABLED
+// Esik degeri protokolde VOLT (tamsayi) olarak tutulur; ic hesap santivolttur.
+static uint16_t thresholdVoltsToCv(uint16_t volts)
+{
+    uint32_t cv = (uint32_t)volts * 100u;
+
+    return (cv > 65535u) ? 65535u : (uint16_t)cv;
+}
+#endif
+
+#if CONF_THRESHOLD_ENABLED
+// --- Esik olay mantigi -------------------------------------------------------
+// Saniyelik VRMS degerleri bir dakikalik pencerede toplanir, pencerenin MEDYANI
+// karar istatistigi olarak kullanilir (ortalama tek bir sicramadan etkilenir,
+// medyan etkilenmez). Flash'a saniyelik ornek degil, OLAY yazilir.
+
+static th_state_t th_state;
+static uint16_t th_window[TH_WINDOW_MAX_SAMPLES];
+static uint16_t th_window_count = 0;
+static int8_t th_last_min = -1;
+
+static uint16_t thresholdReleaseCv(uint16_t enter_cv)
+{
+    return (enter_cv > TH_HYSTERESIS_CV) ? (uint16_t)(enter_cv - TH_HYSTERESIS_CV) : 0u;
+}
+
+// RTC kurulmamisken kaydedilen bir olay "en son ne zaman ariza vardi" sorusuna
+// 2000 yilindan bir tarih dondurur ve listenin tamamini guvenilmez yapar.
+static bool isRTCTimeValid(void)
+{
+    return current_time.year >= TH_RTC_MIN_VALID_YEAR && current_time.year <= 99 &&
+           current_time.month >= 1 && current_time.month <= 12 &&
+           current_time.day >= 1 && current_time.day <= 31;
+}
+
+static void thWriteRecord(const th_record_t *rec, const char *what)
+{
+    struct ThresholdData data;
+
+    setDateToCharArray(rec->time.year, data.year);
+    setDateToCharArray(rec->time.month, data.month);
+    setDateToCharArray(rec->time.day, data.day);
+    setDateToCharArray(rec->time.hour, data.hour);
+    setDateToCharArray(rec->time.min, data.min);
+    setDateToCharArray(rec->time.sec, data.sec);
+    data.vrms = rec->vrms_cv;
+    data.duration = rec->duration;
+
+    PRINTF("THRESHOLD EVENT: %s %02d-%02d-%02d %02d:%02d:%02d vrms=%u.%02u V sure=%u dk\r\n",
+           what, rec->time.year, rec->time.month, rec->time.day,
+           rec->time.hour, rec->time.min, rec->time.sec,
+           (unsigned)(rec->vrms_cv / 100u), (unsigned)(rec->vrms_cv % 100u),
+           (unsigned)rec->duration);
+
+    writeThresholdRecord(&data);
+}
+
+static void thTimeFromRTC(th_time_t *t)
+{
+    t->year = current_time.year;
+    t->month = current_time.month;
+    t->day = current_time.day;
+    t->hour = current_time.hour;
+    t->min = current_time.min;
+    t->sec = current_time.sec;
+}
+
+static void thProcessWindow(uint16_t threshold_cv)
+{
+    th_record_t rec;
+    th_time_t now;
+    uint16_t median_cv = thMedianCv(th_window, th_window_count);
+
+    // Esik UART'tan degistirilmis olabilir. Suren bir olayi bozmadan guncelle.
+    if (th_state.enter_cv != threshold_cv)
+    {
+        th_state.enter_cv = threshold_cv;
+        th_state.release_cv = thresholdReleaseCv(threshold_cv);
+    }
+
+    thTimeFromRTC(&now);
+
+    th_action_t action = thEventWindow(&th_state, median_cv, &now, &rec);
+
+    PRINTF("THRESHOLD: pencere medyani=%u.%02u V (%u ornek) esik=%u.%02u V%s\r\n",
+           (unsigned)(median_cv / 100u), (unsigned)(median_cv % 100u),
+           (unsigned)th_window_count,
+           (unsigned)(threshold_cv / 100u), (unsigned)(threshold_cv % 100u),
+           th_state.active ? " [OLAY AKTIF]" : "");
+
+    if (action == TH_ACTION_NONE)
+    {
+        return;
+    }
+
+    if (!isRTCTimeValid())
+    {
+        PRINTF("THRESHOLD EVENT: RTC kurulmamis (yil=%d), kayit atlandi\r\n", current_time.year);
+        return;
+    }
+
+    switch (action)
+    {
+    case TH_ACTION_EVENT_STARTED:
+        thWriteRecord(&rec, "BASLADI");
+        break;
+    case TH_ACTION_EVENT_ONGOING:
+        thWriteRecord(&rec, "SURUYOR");
+        break;
+    case TH_ACTION_EVENT_ENDED:
+        thWriteRecord(&rec, "BITTI  ");
+        break;
+    default:
+        break;
+    }
+}
+#endif
+
 static void vADCReadTask(void *pvParameters)
 {
     (void)pvParameters;
@@ -441,6 +560,17 @@ static void vADCReadTask(void *pvParameters)
     // tetiklenme) onlemek icin "bu dakika icin zaten yazdik mi" kenar
     // tespiti eklendi.
     int last_load_profile_write_min = -1;
+
+#if CONF_THRESHOLD_ENABLED
+    uint16_t initial_threshold_cv = thresholdVoltsToCv(getVRMSThresholdValue());
+    thEventInit(&th_state, initial_threshold_cv, thresholdReleaseCv(initial_threshold_cv),
+                TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_WINDOWS);
+    PRINTF("THRESHOLD: olay mantigi kuruldu. giris=%u.%02u V cikis=%u.%02u V "
+           "(giris %d pencere, cikis %d pencere, ara kayit %d dk)\r\n",
+           (unsigned)(th_state.enter_cv / 100u), (unsigned)(th_state.enter_cv % 100u),
+           (unsigned)(th_state.release_cv / 100u), (unsigned)(th_state.release_cv % 100u),
+           TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_WINDOWS);
+#endif
 
     esp_task_wdt_add(NULL);
 
@@ -503,9 +633,6 @@ static void vADCReadTask(void *pvParameters)
         vrms_instant = vrms;
         send_vrms_instant_indication();
 
-#if CONF_THRESHOLD_ENABLED || CONF_THRESHOLD_PIN_ENABLED
-        uint16_t variance = calculateVariance(adc_samples_buffer, window_samples);
-#endif
         // bias_voltage KALDIRILDI (bkz. adc.c) - calculateVRMS() bu parametreyi
         // zaten yoksayiyordu (self-referencing yontem), imza uyumlulugu icin
         // sadece 0.0f geciliyor.
@@ -514,15 +641,39 @@ static void vADCReadTask(void *pvParameters)
         vrms_buffer[(vrms_buffer_count++) % VRMS_BUFFER_SIZE] = vrms;
 
 #if CONF_THRESHOLD_PIN_ENABLED || CONF_THRESHOLD_ENABLED
-        if (vrms >= (float)getVRMSThresholdValue())
-        {
+        uint16_t vrms_cv = thVoltsToCv(vrms);
+        uint16_t threshold_cv = thresholdVoltsToCv(getVRMSThresholdValue());
+
 #if CONF_THRESHOLD_PIN_ENABLED
+        // Pin anlik gostergedir, saniyelik kalir; flash'a yazilan sey artik olaydir.
+        if (vrms_cv >= threshold_cv)
+        {
             setThresholdPIN();
-#endif
-#if CONF_THRESHOLD_ENABLED
-            writeThresholdRecord(vrms, variance);
-#endif
         }
+#endif
+
+#if CONF_THRESHOLD_ENABLED
+        if (th_window_count < TH_WINDOW_MAX_SAMPLES)
+        {
+            th_window[th_window_count++] = vrms_cv;
+        }
+
+        // Pencere RTC dakikasina hizalidir. sec == 0 yerine dakika DEGISIMINE
+        // bakiyoruz; gorev jitter'i bir saniyeyi kacirsa bile pencere kapanir.
+        // Ikinci kosul emniyet supabi: RTC durursa dakika hic degismez ve olay
+        // mantigi sessizce olurdu. Tampon dolunca da kapatiyoruz ki boru hatti
+        // (ve teshis loglari) saatten bagimsiz calismaya devam etsin.
+        if (current_time.min != th_last_min || th_window_count >= TH_WINDOW_MAX_SAMPLES)
+        {
+            if (th_last_min >= 0 && th_window_count > 0)
+            {
+                thProcessWindow(threshold_cv);
+            }
+
+            th_last_min = current_time.min;
+            th_window_count = 0;
+        }
+#endif
 #endif
 
         if (current_time.sec == 0 && current_time.min % load_profile_record_period == 0 &&

@@ -91,6 +91,14 @@ struct FlashData
     uint8_t mean_volt_dec;
 };
 
+// Esik kaydi artik OLAY bazlidir, saniyelik ornek bazli degil.
+//   - Olay baslarken: zaman damgasi = olayin basi, vrms = tetikleyen deger,
+//     duration = TH_DURATION_STARTED (0xFFFF).
+//   - Olay biterken:  zaman damgasi = olayin sonu, vrms = olay boyunca gorulen
+//     TEPE deger, duration = dakika cinsinden sure.
+// vrms artik SANTIVOLT'tur (573 = 5.73 V); eskiden volt cinsinden tamsayiya
+// kirpiliyor ve ondalik tamamen kayboluyordu.
+// Boyut 16 baytta sabit kalir; flash yerlesimi degismez.
 struct ThresholdData
 {
     char year[2];
@@ -99,8 +107,8 @@ struct ThresholdData
     char hour[2];
     char min[2];
     char sec[2];
-    uint16_t vrms;
-    uint16_t variance;
+    uint16_t vrms;     // santivolt
+    uint16_t duration; // dakika, 0xFFFF = olay suruyor
 };
 
 struct AmplitudeChangeData
