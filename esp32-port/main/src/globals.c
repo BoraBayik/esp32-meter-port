@@ -64,7 +64,14 @@ SemaphoreHandle_t xVRMSLastValuesMutex;
 SemaphoreHandle_t xVRMSThresholdMutex;
 SemaphoreHandle_t xThresholdSetFlagMutex;
 
-const uint16_t pattern_idle[] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+// Bosta "cihaz calisiyor" gostergesi. Degerler MILISANIYE (StatusLedTask 10 ms
+// dongude oynatiyor), sirayla yanik/sonuk. dev'den gelen {100 x 10} deseni
+// 5 Hz'di ve gozu yoruyordu; 1 Hz hem rahat gorunuyor hem "canli" mesajini
+// ayni sekilde veriyor. Daha da yavas istersen tek satir: {1000, 1000} -> 0.5 Hz,
+// ya da belli belirsiz bir nabiz icin {100, 1900} -> 2 saniyede bir kisa flas.
+// ⚠️ Dizi uzunlugunu degistirirsen asagidaki patterns[] icindeki sayiyi da
+// guncelle.
+const uint16_t pattern_idle[] = {500, 500};
 
 // Hata Desenleri (LED blink pattern'leri, ms cinsinden ac/kapa sureleri)
 const uint16_t led_pattern_uart_not_readable[] = {50, 950};                        // 1 Kisa
@@ -82,7 +89,7 @@ const uint16_t led_pattern_flash_metadata_corrupt[] = {250, 100, 250, 100, 50, 6
 const uint16_t led_pattern_rtc_stalled[] = {500, 100, 500, 100, 500, 300};           // 3 Uzun (saat durdu)
 
 const LedPattern patterns[] = {
-    {pattern_idle, 10},
+    {pattern_idle, 2},
     {led_pattern_uart_not_readable, 2},
     {led_pattern_message_timeout, 2},
     {led_pattern_invalid_request_mode, 4},

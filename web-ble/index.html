@@ -243,6 +243,8 @@
   }
   .history-row:last-child { border-bottom: none; }
   .history-row.history-empty { opacity: 0.4; }
+  /* Hala suren olay: kapanmis kayitlardan ayirt edilsin. */
+  .history-row.history-ongoing .history-value { color: #d97706; }
   .history-date { color: var(--muted); font-size: 0.95rem; }
   .history-value { font-weight: 600; font-size: 1.05rem; }
 
@@ -917,6 +919,20 @@ async function populateStatusFields() {
    dahil) satir satir gosterir. innerHTML kullanilmiyor - BLE'den gelen
    veri (pairing olmadigi icin sahte bir cihazdan da gelebilir) hicbir
    sekilde HTML olarak yorumlanmiyor (XSS'e kapali). --- */
+/* Dakika cinsinden sureyi okunur hale getirir: 45 -> "45 dk",
+   90 -> "1 sa 30 dk", 2880 -> "2 gün". */
+function formatDuration(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 0) return "—";
+  if (minutes < 60) return minutes + " dk";
+
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+
+  if (days > 0) return days + " gün" + (hours ? " " + hours + " sa" : "");
+  return hours + " sa" + (mins ? " " + mins + " dk" : "");
+}
+
 function renderHistoryFull(text) {
   const thresholdBox = document.getElementById("threshold-log");
   const resetBox = document.getElementById("reset-log");
@@ -938,11 +954,33 @@ function renderHistoryFull(text) {
     value.className = "history-value";
 
     if (type === "T") {
-      const date = parts[2], time = parts[3], vrms = parts[4], varyans = parts[5];
+      /* Kayitlar artik OLAY bazli: son alan varyans degil, olayin DAKIKA
+         cinsinden suresi. Iki ozel deger olayin hala surdugunu gosterir:
+           65535 -> olay BASLADI (ilk kayit)
+           65534 -> olay SURUYOR (uzun olaylarda atilan ara kayit)
+         vrms alani da cihaz tarafinda "V.VV" olarak bicimlendirilip
+         geliyor (eskiden tam sayiya kirpilmis volttu). */
+      const date = parts[2], time = parts[3], vrms = parts[4];
+      const duration = parseInt(parts[5], 10);
       const empty = date === "00-00-00";
+      const ongoing = duration === 65535 || duration === 65534;
+
       row.classList.toggle("history-empty", empty);
+      row.classList.toggle("history-ongoing", !empty && ongoing);
       label.textContent = "#" + slot + (empty ? " — boş" : " — " + date + " " + time);
-      value.textContent = empty ? "" : vrms + "V (varyans " + varyans + ")";
+
+      if (empty) {
+        value.textContent = "";
+      } else if (ongoing) {
+        /* Suren olayda zaman damgasi olayin BASI, vrms ise o ana kadarki
+           tepe degerdir. */
+        value.textContent = vrms + " V — sürüyor";
+      } else {
+        /* Biten olayda zaman damgasi DUSUS ani, vrms olay boyunca gorulen
+           TEPE deger. */
+        value.textContent = vrms + " V tepe — " + formatDuration(duration);
+      }
+
       row.append(label, value);
       thresholdBox.append(row);
     } else if (type === "R") {

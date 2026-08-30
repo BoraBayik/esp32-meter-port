@@ -343,13 +343,19 @@ void trigger_short_read(void)
 }
 
 // Esik asim (threshold_rec) ve reset (reset_dates) kayitlarini dogrudan
-// flash'tan okuyup "T,slot,tarih,saat,vrms,varyans;R,slot,tarih,saat" formatina
+// flash'tan okuyup "T,slot,tarih,saat,vrms,sure;R,slot,tarih,saat" formatina
 // cevirir - uart.c'deki send_threshold_records()/send_reset_dates() ile
-// AYNI flash okuma mantigi (ayni partition'lar, ayni offsetler), ama RS485'e
-// yazmak yerine bir metin tamponuna yaziyor.
+// AYNI flash okuma mantigi (ayni partition'lar, ayni halka aritmetigi), ama
+// RS485'e yazmak yerine bir metin tamponuna yaziyor.
+//
+// ⚠️ FORMAT DEGISTI (olay bazli kayitlara gecisle birlikte):
+//   - vrms artik SANTIVOLT degil, "V.VV" seklinde ondalikli yaziliyor
+//   - son alan varyans DEGIL, olayin DAKIKA cinsinden suresi
+//     * 65535 = olay BASLADI, hala suruyor
+//     * 65534 = olay SURUYOR (ara kayit), hala suruyor
+//   Web arayuzu bu iki ozel degeri "devam ediyor" olarak gostermeli.
 static void append_threshold_history(char *out, size_t out_size, size_t *pos)
 {
-    const size_t total_size = FLASH_RECORD_SIZE * THRESHOLD_RECORD_OBIS_COUNT;
     static uint8_t threshold_records_raw[FLASH_RECORD_SIZE * THRESHOLD_RECORD_OBIS_COUNT];
 
     const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, CUSTOM_PARTITION_SUBTYPE, PARTITION_LABEL_THRESHOLD_REC);
@@ -359,25 +365,39 @@ static void append_threshold_history(char *out, size_t out_size, size_t *pos)
         return;
     }
 
+    memset(threshold_records_raw, 0xFF, sizeof(threshold_records_raw));
+
     if (xSemaphoreTake(xFlashMutex, pdMS_TO_TICKS(250)) != pdTRUE)
     {
         ESP_LOGE(TAG, "append_threshold_history: flash mutex alinamadi");
         return;
     }
-    // ⚠️ GERCEK BIR HATA BURADAYDI (uart.c/send_threshold_records()'teki ile
-    // AYNI): her zaman 0. sektorden okunuyordu, ama yazma tarafi su anki
-    // aktif sektore (th_sector_data) yaziyor - duzeltildi.
-    esp_partition_read(part, (size_t)th_sector_data * FLASH_SECTOR_SIZE, threshold_records_raw, total_size);
+
+    // Kayit alani bir HALKA tampon: alanin basindan degil, YAZMA KONUMUNDAN
+    // geriye dogru yurunur. i = 0 en eski olacak sekilde dolduruyoruz ki
+    // asagidaki artan slot numarasi kronolojik sirayla gitsin (RS485'teki
+    // 96.77.4*N ile ayni kural: 1 = en eski, 10 = en yeni).
+    uint16_t write_index = getThresholdWriteIndex();
+
+    for (size_t i = 0; i < THRESHOLD_RECORD_OBIS_COUNT; i++)
+    {
+        uint16_t back = (uint16_t)(THRESHOLD_RECORD_OBIS_COUNT - i);
+        uint16_t slot = thSlotBack(write_index, back, TH_RECORD_SLOT_COUNT);
+
+        esp_partition_read(part, (size_t)slot * FLASH_RECORD_SIZE,
+                           &threshold_records_raw[i * FLASH_RECORD_SIZE], FLASH_RECORD_SIZE);
+    }
+
     xSemaphoreGive(xFlashMutex);
 
-    for (size_t i = 0, idx = THRESHOLD_RECORD_OBIS_COUNT; i < THRESHOLD_RECORD_OBIS_COUNT; i++, idx--)
+    for (size_t i = 0, idx = 1; i < THRESHOLD_RECORD_OBIS_COUNT; i++, idx++)
     {
         size_t offset = i * FLASH_RECORD_SIZE;
         int n;
 
         if (threshold_records_raw[offset] == 0xFF || threshold_records_raw[offset] == 0x00)
         {
-            n = snprintf(out + *pos, out_size - *pos, "T,%d,00-00-00,00:00:00,000,00000;", (int)idx);
+            n = snprintf(out + *pos, out_size - *pos, "T,%d,00-00-00,00:00:00,000.00,00000;", (int)idx);
         }
         else
         {
@@ -389,11 +409,11 @@ static void append_threshold_history(char *out, size_t out_size, size_t *pos)
             char sec[3] = {(char)threshold_records_raw[offset + 10], (char)threshold_records_raw[offset + 11], 0};
             uint16_t vrms = threshold_records_raw[offset + 13];
             vrms = (vrms << 8) + threshold_records_raw[offset + 12];
-            uint16_t variance = threshold_records_raw[offset + 15];
-            variance = (variance << 8) + threshold_records_raw[offset + 14];
+            uint16_t duration = threshold_records_raw[offset + 15];
+            duration = (duration << 8) + threshold_records_raw[offset + 14];
 
-            n = snprintf(out + *pos, out_size - *pos, "T,%d,%s-%s-%s,%s:%s:%s,%03d,%05d;",
-                         (int)idx, year, month, day, hour, min, sec, vrms, variance);
+            n = snprintf(out + *pos, out_size - *pos, "T,%d,%s-%s-%s,%s:%s:%s,%03d.%02d,%05d;",
+                         (int)idx, year, month, day, hour, min, sec, vrms / 100, vrms % 100, duration);
         }
 
         if (n > 0 && (size_t)n < out_size - *pos)
