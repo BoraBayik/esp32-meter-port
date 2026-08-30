@@ -475,15 +475,28 @@ static void thWriteRecord(const th_record_t *rec, const char *what)
     data.vrms = rec->vrms_cv;
     data.duration = rec->duration;
 
-    PRINTF("THRESHOLD EVENT: %s %02d-%02d-%02d %02d:%02d:%02d vrms=%u.%02u V sure=%u dk\r\n",
-           what, rec->time.year, rec->time.month, rec->time.day,
-           rec->time.hour, rec->time.min, rec->time.sec,
-           (unsigned)(rec->vrms_cv / 100u), (unsigned)(rec->vrms_cv % 100u),
-           (unsigned)rec->duration);
+    if (thDurationIsOpen(rec->duration))
+    {
+        PRINTF("THRESHOLD EVENT: %s %02d-%02d-%02d %02d:%02d:%02d vrms=%u.%02u V sure=ACIK\r\n",
+               what, rec->time.year, rec->time.month, rec->time.day,
+               rec->time.hour, rec->time.min, rec->time.sec,
+               (unsigned)(rec->vrms_cv / 100u), (unsigned)(rec->vrms_cv % 100u));
+    }
+    else
+    {
+        PRINTF("THRESHOLD EVENT: %s %02d-%02d-%02d %02d:%02d:%02d vrms=%u.%02u V sure=%u dk\r\n",
+               what, rec->time.year, rec->time.month, rec->time.day,
+               rec->time.hour, rec->time.min, rec->time.sec,
+               (unsigned)(rec->vrms_cv / 100u), (unsigned)(rec->vrms_cv % 100u),
+               (unsigned)rec->duration);
+    }
 
     writeThresholdRecord(&data);
 }
 
+// Acilista, onceki calismadan acik kalmis bir olay varsa devralinir. Boylece
+// TPL5010'un donanim reseti tek bir arizayi birden fazla olaya bolmez ve sure
+// dogru hesaplanir.
 static void thTimeFromRTC(th_time_t *t)
 {
     t->year = current_time.year;
@@ -492,6 +505,45 @@ static void thTimeFromRTC(th_time_t *t)
     t->hour = current_time.hour;
     t->min = current_time.min;
     t->sec = current_time.sec;
+}
+
+static void thResumeOpenEventIfAny(void)
+{
+    th_time_t start_time;
+    th_time_t last_record_time;
+    th_time_t now;
+    uint16_t peak_cv = 0;
+
+    if (!isRTCTimeValid())
+    {
+        return; // zaman guvenilir degilse devralmanin anlami yok
+    }
+
+    if (!findOpenThresholdEvent(&start_time, &peak_cv, &last_record_time))
+    {
+        return;
+    }
+
+    // Son kayit cok eskiyse cihaz resetlenmemis, KAPALI kalmistir. O boslugu
+    // olaya saymak sureyi tamamen yanlis gosterir; devralmiyoruz.
+    thTimeFromRTC(&now);
+    uint32_t gap = thMinutesBetween(&last_record_time, &now);
+
+    if (gap > TH_RESUME_MAX_GAP_MINUTES)
+    {
+        PRINTF("THRESHOLD: acik olay var ama son kayit %u dk once "
+               "(cihaz kapali kalmis), devralinmadi\r\n", (unsigned)gap);
+        return;
+    }
+
+    thEventResume(&th_state, &start_time, peak_cv, &last_record_time);
+
+    PRINTF("THRESHOLD: acik olay devralindi. baslangic=%02d-%02d-%02d %02d:%02d:%02d "
+           "tepe=%u.%02u V son kayit=%02d:%02d\r\n",
+           start_time.year, start_time.month, start_time.day,
+           start_time.hour, start_time.min, start_time.sec,
+           (unsigned)(peak_cv / 100u), (unsigned)(peak_cv % 100u),
+           last_record_time.hour, last_record_time.min);
 }
 
 static void thProcessWindow(uint16_t threshold_cv)
@@ -564,12 +616,14 @@ static void vADCReadTask(void *pvParameters)
 #if CONF_THRESHOLD_ENABLED
     uint16_t initial_threshold_cv = thresholdVoltsToCv(getVRMSThresholdValue());
     thEventInit(&th_state, initial_threshold_cv, thresholdReleaseCv(initial_threshold_cv),
-                TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_WINDOWS);
+                TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_MINUTES);
     PRINTF("THRESHOLD: olay mantigi kuruldu. giris=%u.%02u V cikis=%u.%02u V "
            "(giris %d pencere, cikis %d pencere, ara kayit %d dk)\r\n",
            (unsigned)(th_state.enter_cv / 100u), (unsigned)(th_state.enter_cv % 100u),
            (unsigned)(th_state.release_cv / 100u), (unsigned)(th_state.release_cv % 100u),
-           TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_WINDOWS);
+           TH_ENTER_WINDOWS, TH_EXIT_WINDOWS, TH_HEARTBEAT_MINUTES);
+
+    thResumeOpenEventIfAny();
 #endif
 
     esp_task_wdt_add(NULL);

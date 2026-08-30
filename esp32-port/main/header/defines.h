@@ -168,8 +168,20 @@ _Static_assert(sizeof(DEVICE_SERIAL_NUMBER) - 1 == SERIAL_NUMBER_SIZE,
 #define TH_ENTER_WINDOWS 2
 // olayin bitmesi icin gereken ardisik pencere sayisi (esik altinda)
 #define TH_EXIT_WINDOWS 5
-// uzun olaylarda ara "suruyor" kaydi periyodu (dakika); 1440 = gunde bir
-#define TH_HEARTBEAT_WINDOWS 1440
+// Uzun olaylarda ara "suruyor" kaydi periyodu (dakika).
+// TPL5010 donanim reseti ESTIMATE_RESET_MS (90 dk) periyodunda vurdugu icin bu
+// deger ondan KUCUK olmali; aksi halde ara kayit hic yazilamadan reset gelir ve
+// uzun bir ariza flash'ta hic iz birakmaz. Ayrica reset aninda kaybolan tepe
+// degerin penceresi de bu kadardir.
+#define TH_HEARTBEAT_MINUTES 30
+// Acilista acik olayin baslangicini ararken halkada en fazla kac kayit geriye
+// bakilacagi. Bulunamazsa son kaydin zamani baslangic sayilir.
+#define TH_OPEN_EVENT_MAX_BACK 64
+// Acik bir olay ancak son kaydi bu kadar dakikadan yeniyse devralinir. Donanim
+// reseti 90 dk, ara kayit 30 dk; aradaki bosluk normalde 90 dk'yi asmaz. Daha
+// eskiyse cihaz resetlenmemis, KAPALI kalmistir -- o araligi olaya saymak
+// yaniltici olur, devralmayiz.
+#define TH_RESUME_MAX_GAP_MINUTES 180
 // histerezis: cikis esigi giris esiginin bu kadar altindadir (santivolt)
 #define TH_HYSTERESIS_CV 50
 // RTC'nin kurulmus sayilmasi icin en kucuk yil (2 haneli)

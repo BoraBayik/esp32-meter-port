@@ -357,6 +357,40 @@ uint16_t getThresholdWriteIndex(void)
     return (uint16_t)(((uint32_t)pos.sector * TH_RECORDS_PER_SECTOR) + pos.slot_in_sector);
 }
 
+// thFindOpenEvent icin geri cagirim: halkada `back` kayit geriye giden ham
+// 16 bayti okur (back = 1 en son yazilan kayit).
+static bool fetchThresholdRecordBack(void *ctx, uint16_t back, uint8_t *out)
+{
+    if (ctx == NULL || out == NULL || back == 0 || back > TH_RECORD_SLOT_COUNT)
+    {
+        return false;
+    }
+
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, CUSTOM_PARTITION_SUBTYPE, PARTITION_LABEL_THRESHOLD_REC);
+
+    if (part == NULL)
+    {
+        return false;
+    }
+
+    uint16_t write_index = *(const uint16_t *)ctx;
+    uint16_t slot = thSlotBack(write_index, back, TH_RECORD_SLOT_COUNT);
+
+    return esp_partition_read(part, (size_t)slot * FLASH_RECORD_SIZE, out, FLASH_RECORD_SIZE) == ESP_OK;
+}
+
+// Acilista cagrilir: onceki calisma bir olayin ortasinda kesildiyse (son kayit
+// hala "acik" isaretliyse) o olayin baslangicini, tepesini ve son kayit anini
+// dondurur.
+bool findOpenThresholdEvent(th_time_t *start_time, uint16_t *peak_cv, th_time_t *last_record_time)
+{
+    uint16_t write_index = getThresholdWriteIndex();
+
+    return thFindOpenEvent(fetchThresholdRecordBack, &write_index, TH_OPEN_EVENT_MAX_BACK,
+                           start_time, peak_cv, last_record_time);
+}
+
 // Write threshold data to flash.
 // Kayit alani bir HALKA tampondur: son sektor dolunca 0. sektore donulur, o
 // sektor silinip uzerine yazilmaya devam edilir (en eski kayitlar duser).

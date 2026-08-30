@@ -1,9 +1,11 @@
 #ifndef ADC_H
 #define ADC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "header/project_globals.h"
+#include "header/threshold_event.h"
 
 // dev branch'teki blink/header/adc.h'den ESP32-C3'e uyarlanmistir.
 //
@@ -88,6 +90,8 @@ void calculateVRMSValuesPerSecond(float *vrms_buffer, uint16_t *sample_buf, size
 // Halkadaki bir sonraki yazma konumu (mutlak slot indeksi, 0..TH_RECORD_SLOT_COUNT-1)
 // ⚠️ xFlashMutex ALMAZ - cagiran taraf sorumludur.
 uint16_t getThresholdWriteIndex(void);
+// Acilista: onceki calismadan acik kalmis bir olay var mi?
+bool findOpenThresholdEvent(th_time_t *start_time, uint16_t *peak_cv, th_time_t *last_record_time);
 void writeThresholdRecord(const struct ThresholdData *record);
 #if CONF_SUDDEN_AMPLITUDE_CHANGE_ENABLED
 uint8_t detectSuddenAmplitudeChangeWithDerivative(float *sample_buf, size_t buffer_size);
