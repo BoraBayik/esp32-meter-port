@@ -57,6 +57,19 @@ static char vrms_instant_buf[16] = "0.0";
 // gibi ~35 byte - rahat sigacak sekilde buyutuldu.
 static char load_history_buf[1024] = "henuz okunmadi";
 
+// ⚠️ BLE'de bir karakteristik degerinin ust siniri 512 BAYT (ATT spesifikasyonu).
+// 10 esik kaydi (351 bayt) + 12 reset kaydi (267 bayt) = 618 bayt ediyor;
+// fazlasi istemciye HIC ulasmiyor ve son kayit ORTADAN kesiliyordu - arayuzde
+// "00 - undefined" olarak gorunen buydu.
+//
+// Karar: yarim kayit gondermektense AZ gondermek. Butceye TAM sigan kadar
+// kayit yaziliyor (pratikte 7 reset kaydi), sigmayan hic yazilmiyor.
+// RS485 tarafi (0.1.2*N) bu sinirdan etkilenmez - orada 12 kaydin tamami
+// gelmeye devam eder.
+#define BLE_HISTORY_MAX_BYTES 512
+// En uzun reset kaydi: "R,12,00-01-01,01:44:32;" = 23 bayt
+#define RS_HISTORY_ENTRY_MAX 23
+
 static char uptime_buf[24];
 static char free_heap_buf[24];
 static char adc_rate_buf[48];
@@ -463,9 +476,36 @@ static void append_reset_history(char *out, size_t out_size, size_t *pos)
 
     xSemaphoreGive(xFlashMutex);
 
+    // Kalan bayt butcesine TAM sigan kayit sayisi. Sigmayanlar hic yazilmaz;
+    // eskiden butce bitince son kayit ortadan kesiliyordu.
+    //
+    // ⚠️ Atlananlar BASTAKILER, yani EN ESKI kayitlar. Reset kayitlari
+    // kronolojik siralidir (obis 1 = en eski, 12 = en yeni) ve pratikte
+    // ilgilenilen sey son acilislardir - o yuzden yeniler korunup eskiler
+    // dusuruluyor. Tersini istersen bu blogu silmen yeterli: o zaman
+    // 1..7 (en eskiler) gonderilir.
+    size_t budget = (BLE_HISTORY_MAX_BYTES > *pos) ? (BLE_HISTORY_MAX_BYTES - *pos) : 0;
+    uint16_t fits = (uint16_t)(budget / RS_HISTORY_ENTRY_MAX);
+    uint16_t skip = (fits < RESET_DATES_OBIS_COUNT) ? (uint16_t)(RESET_DATES_OBIS_COUNT - fits) : 0;
+
+    if (skip > 0)
+    {
+        ESP_LOGW(TAG, "BLE 512 bayt siniri: en eski %u reset kaydi atlandi, %u kayit gonderiliyor "
+                      "(RS485'te 12'sinin tamami gelmeye devam ediyor)",
+                 (unsigned)skip, (unsigned)(RESET_DATES_OBIS_COUNT - skip));
+    }
+
     for (uint16_t i = 0, obis = 1; i < sizeof(reset_dates_raw); i += FLASH_RECORD_SIZE, obis++)
     {
         int n;
+
+        // Slot numarasi RS485'teki 0.1.2*N ile ayni kalsin diye obis yine de
+        // ilerliyor; sadece yazma atlaniyor.
+        if (obis <= skip)
+        {
+            continue;
+        }
+
         if (reset_dates_raw[i] == 0xFF || reset_dates_raw[i] == 0x00)
         {
             n = snprintf(out + *pos, out_size - *pos, "R,%d,00-00-00,00:00:00;", obis);
