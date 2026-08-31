@@ -1022,10 +1022,6 @@ void app_main(void)
     gpio_set_direction(STATUS_LED_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(STATUS_LED_PIN, 1);
 
-    gpio_reset_pin(RESET_PULSE_PIN);
-    gpio_set_direction(RESET_PULSE_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(RESET_PULSE_PIN, 0);
-
     if (!initUART())
     {
         ESP_LOGE(TAG, "UART Init fail! Restarting...");
