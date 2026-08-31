@@ -1,3 +1,4 @@
+/* ignoreCommand test - zararsiz yorum satiri, islevi etkilemez */
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
